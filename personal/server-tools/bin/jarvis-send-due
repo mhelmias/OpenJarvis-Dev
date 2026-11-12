@@ -1,0 +1,3 @@
+#!/bin/sh
+# Dijalankan systemd (jarvis-reminders.timer) setiap menit.
+exec /usr/bin/python3 -s -E /opt/jarvis-tools/jarvis_tools/send_due.py "$@"

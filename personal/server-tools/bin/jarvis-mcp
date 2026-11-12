@@ -1,0 +1,3 @@
+#!/bin/sh
+# Dijalankan SSH (forced command) setiap kali OpenJarvis tersambung ke akun jarvis.
+exec /usr/bin/python3 -s -E /opt/jarvis-tools/jarvis_tools/mcp_server.py

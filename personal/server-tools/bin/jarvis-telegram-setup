@@ -1,0 +1,3 @@
+#!/bin/sh
+# Atur token dan chat Telegram. Jalankan dengan: sudo jarvis-telegram-setup
+exec /usr/bin/python3 -s -E /opt/jarvis-tools/jarvis_tools/setup_telegram.py "$@"

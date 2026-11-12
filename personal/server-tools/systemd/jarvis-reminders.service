@@ -1,0 +1,15 @@
+[Unit]
+Description=Kirim pengingat tugas yang jatuh tempo ke Telegram
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=jarvis
+Group=jarvis
+ExecStart=/opt/jarvis-tools/bin/jarvis-send-due
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/jarvis-tools

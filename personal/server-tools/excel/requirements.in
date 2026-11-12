@@ -1,0 +1,4 @@
+# Tool Excel untuk OpenJarvis. Kunci ulang setelah mengganti versi:
+#   uv pip compile --python-version 3.13 --python-platform x86_64-unknown-linux-gnu \
+#       --generate-hashes excel/requirements.in -o excel/requirements.lock
+excel-mcp-server==2.3.0
