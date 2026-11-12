@@ -1,0 +1,41 @@
+# OpenJarvis di server ai. Model dan kunci API diatur dengan: sudo jarvis-model
+# (program itu mengubah [engine] default, default_model, dan preferred_engine).
+
+[engine]
+default = "nim"
+
+[intelligence]
+default_model = ""
+preferred_engine = "nim"
+max_tokens = 4096
+
+[agent]
+default_agent = "orchestrator"
+
+[server]
+host = "127.0.0.1"
+port = 8000
+
+[analytics]
+enabled = false
+choice_recorded = true
+
+[channel]
+enabled = true
+default_channel = "telegram"
+default_agent = "orchestrator"
+
+[channel.telegram]
+# Hanya chat ini yang dilayani; pesan dari chat lain diabaikan.
+allowed_chat_ids = "@CHAT_ID@"
+
+[sessions]
+# Riwayat chat tersimpan di sessions.db dan dipakai model apa pun yang aktif.
+max_age_hours = 87600.0
+consolidation_threshold = 1000
+
+[tools.mcp]
+enabled = true
+# Tool pengingat dan file dijalankan langsung di server ini (tanpa SSH). Tool Excel berjalan
+# sebagai layanan terpisah (jarvis-excel); entri "excel" ditambahkan oleh install-excel.sh.
+servers = '[{"name": "server-ai", "command": "/opt/jarvis-tools/bin/jarvis-mcp", "args": []}]'

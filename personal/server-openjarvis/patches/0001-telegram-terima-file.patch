@@ -1,0 +1,337 @@
+diff --git a/src/openjarvis/channels/telegram.py b/src/openjarvis/channels/telegram.py
+index 2d6ed751..b6ce13db 100644
+--- a/src/openjarvis/channels/telegram.py
++++ b/src/openjarvis/channels/telegram.py
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ import asyncio
+ import logging
+ import os
++import re
+ import textwrap
+ import threading
+ from typing import Any, Dict, List, Optional
+@@ -20,6 +21,33 @@ from openjarvis.core.registry import ChannelRegistry
+ 
+ logger = logging.getLogger(__name__)
+ 
++# Bots may only download files up to 20 MB through getFile.
++_MAX_INBOX_BYTES = 20 * 1024 * 1024
++_UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9._() -]+")
++
++
++def _safe_inbox_name(name: str) -> str:
++    """Reduce a user-supplied file name to a safe base name."""
++    base = os.path.basename((name or "").replace("\\", "/")).strip()
++    base = _UNSAFE_NAME_CHARS.sub("_", base).lstrip(".").strip()
++    if not base:
++        base = "file"
++    if len(base) > 100:
++        stem, ext = os.path.splitext(base)
++        base = stem[: 100 - len(ext)] + ext
++    return base
++
++
++def _unique_path(directory: str, name: str) -> str:
++    """Return a path in *directory* that does not overwrite an existing file."""
++    stem, ext = os.path.splitext(name)
++    candidate = os.path.join(directory, name)
++    counter = 1
++    while os.path.exists(candidate):
++        candidate = os.path.join(directory, f"{stem}-{counter}{ext}")
++        counter += 1
++    return candidate
++
+ 
+ @ChannelRegistry.register("telegram")
+ class TelegramChannel(BaseChannel):
+@@ -35,6 +63,11 @@ class TelegramChannel(BaseChannel):
+         Message parse mode (``Markdown``, ``HTML``, etc.).
+     bus:
+         Optional event bus for publishing channel events.
++    inbox_dir:
++        Directory where documents sent by allowed chats are saved.  Falls back
++        to ``OPENJARVIS_TELEGRAM_INBOX``.  Empty (the default) ignores
++        documents.  Documents are only accepted when ``allowed_chat_ids`` is
++        set.
+     """
+ 
+     channel_id = "telegram"
+@@ -46,11 +79,13 @@ class TelegramChannel(BaseChannel):
+         allowed_chat_ids: str = "",
+         parse_mode: str = "Markdown",
+         bus: Optional[EventBus] = None,
++        inbox_dir: str = "",
+     ) -> None:
+         self._token = bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+         self._allowed_chat_ids = allowed_chat_ids
+         self._parse_mode = parse_mode
+         self._bus = bus
++        self._inbox_dir = inbox_dir or os.environ.get("OPENJARVIS_TELEGRAM_INBOX", "")
+         self._handlers: List[ChannelHandler] = []
+         self._status = ChannelStatus.DISCONNECTED
+         self._listener_thread: Optional[threading.Thread] = None
+@@ -242,6 +277,71 @@ class TelegramChannel(BaseChannel):
+ 
+     # -- internal helpers -------------------------------------------------------
+ 
++    def _is_allowed_chat(self, chat_id: str) -> bool:
++        """Return whether *chat_id* passes the configured allow-list."""
++        if not self._allowed_chat_ids:
++            return True
++        allowed = {
++            cid.strip() for cid in self._allowed_chat_ids.split(",") if cid.strip()
++        }
++        return chat_id in allowed
++
++    def _dispatch(self, cm: ChannelMessage) -> None:
++        """Run the registered handlers and publish the inbound event."""
++        for handler in self._handlers:
++            try:
++                handler(cm)
++            except Exception:
++                logger.exception("Telegram handler error")
++        if self._bus is not None:
++            self._bus.publish(
++                EventType.CHANNEL_MESSAGE_RECEIVED,
++                {
++                    "channel": cm.channel,
++                    "sender": cm.sender,
++                    "content": cm.content,
++                    "message_id": cm.message_id,
++                },
++            )
++
++    async def _handle_document(self, update: Any, context: Any) -> None:
++        """Save a document from an allowed chat into the inbox directory.
++
++        The agent receives a text message naming the saved path, followed by
++        the caption, so it can work on the file with its tools.
++        """
++        msg = update.message
++        if msg is None or getattr(msg, "document", None) is None:
++            return
++        chat_id = str(msg.chat.id)
++        if not self._allowed_chat_ids or not self._is_allowed_chat(chat_id):
++            logger.debug("Ignoring document from chat %s", chat_id)
++            return
++        doc = msg.document
++        name = _safe_inbox_name(getattr(doc, "file_name", "") or "")
++        if (getattr(doc, "file_size", 0) or 0) > _MAX_INBOX_BYTES:
++            note = f"[File not saved: {name} is larger than the 20 MB Telegram limit]"
++        else:
++            try:
++                os.makedirs(self._inbox_dir, exist_ok=True)
++                path = _unique_path(self._inbox_dir, name)
++                tg_file = await context.bot.get_file(doc.file_id)
++                await tg_file.download_to_drive(custom_path=path)
++                note = f"[File received and saved to: {path}]"
++            except Exception:
++                logger.exception("Failed to save Telegram document")
++                note = f"[File not saved: downloading {name} from Telegram failed]"
++        caption = (getattr(msg, "caption", "") or "").strip()
++        self._dispatch(
++            ChannelMessage(
++                channel="telegram",
++                sender=str(msg.from_user.id) if msg.from_user else "",
++                content=f"{note}\n{caption}" if caption else note,
++                message_id=str(msg.message_id),
++                conversation_id=chat_id,
++            )
++        )
++
+     def _stop_requested(self, async_stop_event: asyncio.Event) -> bool:
+         return self._stop_event.is_set() or async_stop_event.is_set()
+ 
+@@ -395,35 +495,24 @@ class TelegramChannel(BaseChannel):
+                     conversation_id=str(msg.chat.id),
+                 )
+                 # Enforce allow-list when configured
+-                if self._allowed_chat_ids:
+-                    _allowed = {
+-                        cid.strip()
+-                        for cid in self._allowed_chat_ids.split(",")
+-                        if cid.strip()
+-                    }
+-                    if cm.conversation_id not in _allowed:
+-                        logger.debug(
+-                            "Ignoring message from unlisted chat %s",
+-                            cm.conversation_id,
+-                        )
+-                        return
+-                for handler in self._handlers:
+-                    try:
+-                        handler(cm)
+-                    except Exception:
+-                        logger.exception("Telegram handler error")
+-                if self._bus is not None:
+-                    self._bus.publish(
+-                        EventType.CHANNEL_MESSAGE_RECEIVED,
+-                        {
+-                            "channel": cm.channel,
+-                            "sender": cm.sender,
+-                            "content": cm.content,
+-                            "message_id": cm.message_id,
+-                        },
++                if not self._is_allowed_chat(cm.conversation_id):
++                    logger.debug(
++                        "Ignoring message from unlisted chat %s",
++                        cm.conversation_id,
+                     )
++                    return
++                self._dispatch(cm)
+ 
+             app.add_handler(MessageHandler(filters.TEXT, _handle_msg))
++            if self._inbox_dir:
++                if not self._allowed_chat_ids:
++                    logger.warning(
++                        "Telegram inbox is set but allowed_chat_ids is empty; "
++                        "documents will be ignored"
++                    )
++                app.add_handler(
++                    MessageHandler(filters.Document.ALL, self._handle_document)
++                )
+             loop.run_until_complete(self._run_polling_lifecycle(app, async_stop_event))
+         except Exception:
+             logger.debug("Telegram poll loop error", exc_info=True)
+diff --git a/tests/channels/test_telegram.py b/tests/channels/test_telegram.py
+index 3db8376f..18b55142 100644
+--- a/tests/channels/test_telegram.py
++++ b/tests/channels/test_telegram.py
+@@ -764,3 +764,137 @@ class TestChannelAgentWiring:
+ 
+         assert len(calls_a) == 1
+         assert len(calls_b) == 1
++
++
++def _document_update(chat_id=111, file_name="anggaran.xlsx", file_size=10, caption=""):
++    return SimpleNamespace(
++        message=SimpleNamespace(
++            from_user=SimpleNamespace(id=chat_id),
++            chat=SimpleNamespace(id=chat_id),
++            message_id=7,
++            caption=caption,
++            document=SimpleNamespace(
++                file_id="FILE-1", file_name=file_name, file_size=file_size
++            ),
++        )
++    )
++
++
++def _document_context(downloads, payload=b"PK-data"):
++    class FakeFile:
++        async def download_to_drive(self, custom_path):
++            downloads.append(custom_path)
++            with open(custom_path, "wb") as fh:
++                fh.write(payload)
++
++    async def get_file(file_id):
++        assert file_id == "FILE-1"
++        return FakeFile()
++
++    return SimpleNamespace(bot=SimpleNamespace(get_file=get_file))
++
++
++class TestDocumentInbox:
++    """Documents from allowed chats are saved to the inbox and announced."""
++
++    def _channel(self, tmp_path, allowed="111"):
++        ch = TelegramChannel(
++            bot_token="tok", allowed_chat_ids=allowed, inbox_dir=str(tmp_path)
++        )
++        received = []
++        ch.on_message(received.append)
++        return ch, received
++
++    def test_inbox_falls_back_to_env(self, monkeypatch, tmp_path):
++        monkeypatch.setenv("OPENJARVIS_TELEGRAM_INBOX", str(tmp_path))
++        assert TelegramChannel(bot_token="tok")._inbox_dir == str(tmp_path)
++        monkeypatch.delenv("OPENJARVIS_TELEGRAM_INBOX")
++        assert TelegramChannel(bot_token="tok")._inbox_dir == ""
++
++    def test_saves_document_and_dispatches_path_with_caption(self, tmp_path):
++        ch, received = self._channel(tmp_path)
++        downloads = []
++        update = _document_update(caption="Apa isi file ini?")
++        asyncio.run(ch._handle_document(update, _document_context(downloads)))
++
++        saved = tmp_path / "anggaran.xlsx"
++        assert downloads == [str(saved)]
++        assert saved.read_bytes() == b"PK-data"
++        assert len(received) == 1
++        assert received[0].conversation_id == "111"
++        assert received[0].content == (
++            f"[File received and saved to: {saved}]\nApa isi file ini?"
++        )
++
++    def test_never_overwrites_and_sanitizes_names(self, tmp_path):
++        ch, received = self._channel(tmp_path)
++        (tmp_path / "anggaran.xlsx").write_bytes(b"old")
++        downloads = []
++        asyncio.run(
++            ch._handle_document(_document_update(), _document_context(downloads))
++        )
++        asyncio.run(
++            ch._handle_document(
++                _document_update(file_name="../../etc/pass wd?.xlsx"),
++                _document_context(downloads),
++            )
++        )
++        assert (tmp_path / "anggaran.xlsx").read_bytes() == b"old"
++        assert downloads == [
++            str(tmp_path / "anggaran-1.xlsx"),
++            str(tmp_path / "pass wd_.xlsx"),
++        ]
++
++    @pytest.mark.parametrize(("allowed", "chat_id"), [("111", 999), ("", 111)])
++    def test_ignores_unlisted_chat_or_missing_allowlist(
++        self, tmp_path, allowed, chat_id
++    ):
++        ch, received = self._channel(tmp_path, allowed=allowed)
++        downloads = []
++        asyncio.run(
++            ch._handle_document(
++                _document_update(chat_id=chat_id), _document_context(downloads)
++            )
++        )
++        assert downloads == []
++        assert received == []
++        assert list(tmp_path.iterdir()) == []
++
++    def test_too_large_document_is_not_downloaded(self, tmp_path):
++        ch, received = self._channel(tmp_path)
++        downloads = []
++        update = _document_update(file_size=25 * 1024 * 1024)
++        asyncio.run(ch._handle_document(update, _document_context(downloads)))
++        assert downloads == []
++        assert received[0].content.startswith("[File not saved: anggaran.xlsx")
++
++    def test_document_handler_only_registered_with_inbox(self, monkeypatch, tmp_path):
++        registered = {}
++        for inbox in ("", str(tmp_path)):
++            handlers = []
++            app = SimpleNamespace(add_handler=handlers.append)
++            builder = MagicMock()
++            builder.token.return_value = builder
++            builder.build.return_value = app
++            telegram_ext = SimpleNamespace(
++                ApplicationBuilder=lambda: builder,
++                MessageHandler=lambda flt, callback: SimpleNamespace(
++                    filter=flt, callback=callback
++                ),
++                filters=SimpleNamespace(
++                    TEXT="text", Document=SimpleNamespace(ALL="document")
++                ),
++            )
++            monkeypatch.setitem(sys.modules, "telegram.ext", telegram_ext)
++            ch = TelegramChannel(
++                bot_token="tok", allowed_chat_ids="111", inbox_dir=inbox
++            )
++
++            async def no_polling(_app, _stop):
++                return None
++
++            monkeypatch.setattr(ch, "_run_polling_lifecycle", no_polling)
++            ch._poll_loop()
++            registered[inbox] = [h.filter for h in handlers]
++        assert registered[""] == ["text"]
++        assert registered[str(tmp_path)] == ["text", "document"]

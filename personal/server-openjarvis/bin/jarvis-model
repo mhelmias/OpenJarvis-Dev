@@ -1,0 +1,444 @@
+#!/usr/bin/python3
+"""Pilih penyedia model cloud, model, dan kunci API untuk OpenJarvis di server.
+
+  sudo jarvis-model                       menu: pilih penyedia, tempel kunci, pilih model
+  sudo jarvis-model status                lihat penyedia dan model yang aktif
+  sudo jarvis-model use PENYEDIA MODEL    ganti cepat memakai kunci yang sudah tersimpan
+      contoh: sudo jarvis-model use nvidia deepseek-ai/deepseek-v4.1-flash
+
+Kunci API ditempel di terminal (tidak terlihat) dan disimpan di /etc/openjarvis/keys.env,
+yang hanya bisa dibaca root. Riwayat chat ada di /var/lib/openjarvis/sessions.db dan
+tidak ikut berubah saat model diganti.
+"""
+
+from __future__ import annotations
+
+import getpass
+import grp
+import json
+import os
+import pwd
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+CONFIG = "/var/lib/openjarvis/config.toml"
+KEYS = "/etc/openjarvis/keys.env"
+ACTIVE = "/etc/openjarvis/active.env"
+SERVICE = "openjarvis.service"
+
+# Engine "nim" di OpenJarvis adalah klien OpenAI-compatible yang alamatnya diatur lewat
+# NIM_HOST, jadi bisa dipakai untuk penyedia mana pun yang OpenAI-compatible.
+# OpenAI sendiri memakai engine "cloud" karena butuh parameter khusus.
+# "suggested" adalah model yang diuji sekaligus dengan perintah "uji"; tidak semua
+# model dibuka untuk setiap akun, jadi hasil uji yang menentukan.
+PROVIDERS = {
+    "nvidia": {
+        "label": "NVIDIA build (gratis untuk uji coba)",
+        "base": "https://integrate.api.nvidia.com",
+        "engine": "nim",
+        "suggested": [
+            "deepseek-ai/deepseek-v4.1-flash",
+            "z-ai/glm-5.3-flash",
+            "minimaxai/minimax-m3.1-flash",
+            "moonshotai/kimi-k2.6",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "mistralai/mistral-large-4-1t-a52b",
+            "openai/gpt-oss-20b",
+        ],
+    },
+    "openrouter": {
+        "label": "OpenRouter (satu kunci untuk banyak model)",
+        "base": "https://openrouter.ai/api",
+        "engine": "nim",
+        "suggested": ["deepseek/deepseek-v4-flash:free"],
+    },
+    "deepseek": {
+        "label": "DeepSeek resmi (berbayar)",
+        "base": "https://api.deepseek.com",
+        "engine": "nim",
+        "suggested": [],
+    },
+    "moonshot": {
+        "label": "Moonshot/Kimi resmi (berbayar)",
+        "base": "https://api.moonshot.ai",
+        "engine": "nim",
+        "suggested": ["kimi-k3.1-pro"],
+    },
+    "openai": {
+        "label": "OpenAI (berbayar)",
+        "base": "https://api.openai.com",
+        "engine": "cloud",
+        "suggested": [],
+    },
+}
+ORDER = ["nvidia", "openrouter", "deepseek", "moonshot", "openai"]
+
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
+KEY_RE = re.compile(r"^[A-Za-z0-9._~+/=:-]{10,400}$")
+ENV_LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
+TEST_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "cek_jam",
+        "description": "Mengembalikan jam sekarang.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+REASONS = {
+    401: "kunci ditolak",
+    403: "akses ditolak untuk akun ini",
+    404: "tidak tersedia untuk akun ini",
+    429: "batas permintaan habis, coba lagi nanti",
+}
+
+
+class Failed(Exception):
+    def __init__(self, message: str, code: int | str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def reason(exc: Failed) -> str:
+    if exc.code == "timeout":
+        return "terlalu lama, tidak menjawab"
+    if isinstance(exc.code, int):
+        if exc.code in REASONS:
+            return REASONS[exc.code]
+        if exc.code == 400:
+            return "permintaan ditolak (HTTP 400), mungkin tidak mendukung tool"
+        if exc.code >= 500:
+            return f"server penyedia sedang bermasalah (HTTP {exc.code})"
+    return str(exc)
+
+
+def read_env(path: str) -> dict:
+    data = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                match = ENV_LINE_RE.match(line.strip())
+                if match:
+                    data[match.group(1)] = match.group(2)
+    except FileNotFoundError:
+        pass
+    return data
+
+
+def write_file(path: str, text: str, mode: int, owner: str = "root", group: str = "root") -> None:
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.chown(tmp, pwd.getpwnam(owner).pw_uid, grp.getgrnam(group).gr_gid)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def env_text(data: dict) -> str:
+    return "".join(f"{key}={value}\n" for key, value in data.items())
+
+
+def api(base: str, path: str, key: str, payload: dict | None = None, timeout: int = 120) -> dict:
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+        "User-Agent": "jarvis-model/2",
+    }
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(base + path, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace").strip().replace("\n", " ")
+        raise Failed(f"HTTP {exc.code}: {body[:300]}", code=exc.code) from None
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise Failed("waktu habis", code="timeout") from None
+        raise Failed(f"tidak bisa terhubung ke {base}: {exc.reason}") from None
+    except TimeoutError:
+        raise Failed("waktu habis", code="timeout") from None
+    except OSError as exc:
+        raise Failed(f"tidak bisa terhubung ke {base}: {exc}") from None
+    except json.JSONDecodeError:
+        raise Failed(f"jawaban dari {base} bukan JSON") from None
+
+
+def current() -> tuple[str, str]:
+    active = read_env(ACTIVE)
+    return active.get("JARVIS_PROVIDER", ""), active.get("JARVIS_MODEL", "")
+
+
+def service_state() -> str:
+    result = subprocess.run(["systemctl", "is-active", SERVICE], capture_output=True, text=True)
+    return result.stdout.strip() or "tidak diketahui"
+
+
+def show_status() -> None:
+    provider, model = current()
+    if provider:
+        print(f"Aktif: {PROVIDERS.get(provider, {}).get('label', provider)} | model {model}")
+    else:
+        print("Belum ada model yang dipilih.")
+    print(f"Layanan OpenJarvis: {service_state()}")
+
+
+def choose_provider() -> str:
+    keys = read_env(KEYS)
+    print("\nPilih penyedia model:")
+    for number, pid in enumerate(ORDER, 1):
+        saved = "  [kunci tersimpan]" if keys.get(f"KEY_{pid.upper()}") else ""
+        print(f"  {number}) {PROVIDERS[pid]['label']}{saved}")
+    answer = input("Nomor: ").strip()
+    if not answer.isdigit() or not 1 <= int(answer) <= len(ORDER):
+        raise Failed("nomor tidak dikenal")
+    return ORDER[int(answer) - 1]
+
+
+def ask_key(provider: str, offer_saved: bool = True) -> str:
+    saved = read_env(KEYS).get(f"KEY_{provider.upper()}")
+    if saved and offer_saved:
+        answer = input("Pakai kunci yang tersimpan? [Y/n] ").strip().lower()
+        if answer in ("", "y", "ya"):
+            return saved
+    print("Tempel kunci API, lalu tekan Enter. Kunci tidak terlihat saat ditempel.")
+    key = getpass.getpass("Kunci API: ").strip()
+    if not KEY_RE.match(key):
+        raise Failed("bentuk kunci tidak dikenali (ada spasi atau tanda aneh?)")
+    return key
+
+
+def save_key(provider: str, key: str) -> None:
+    keys = read_env(KEYS)
+    keys[f"KEY_{provider.upper()}"] = key
+    write_file(KEYS, env_text(dict(sorted(keys.items()))), 0o600)
+
+
+def fetch_models(provider: str, key: str) -> list[str]:
+    data = api(PROVIDERS[provider]["base"], "/v1/models", key, timeout=30)
+    return sorted({str(item.get("id")) for item in data.get("data", []) if item.get("id")})
+
+
+def first_message(data: dict) -> dict:
+    choices = data.get("choices") or [{}]
+    return choices[0].get("message") or {}
+
+
+def limit_name(provider: str) -> str:
+    return "max_completion_tokens" if PROVIDERS[provider]["engine"] == "cloud" else "max_tokens"
+
+
+def tool_probe(provider: str, key: str, model: str, timeout: int) -> bool:
+    """Satu permintaan dengan tool. True jika model memanggil tool, False jika hanya menjawab."""
+    data = api(PROVIDERS[provider]["base"], "/v1/chat/completions", key, {
+        "model": model,
+        "messages": [{"role": "user", "content": "Jam berapa sekarang? Pakai tool cek_jam."}],
+        "tools": [TEST_TOOL],
+        "tool_choice": "auto",
+        limit_name(provider): 1024,
+    }, timeout=timeout)
+    calls = first_message(data).get("tool_calls") or []
+    return any((call.get("function") or {}).get("name") == "cek_jam" for call in calls)
+
+
+def test_model(provider: str, key: str, model: str) -> bool:
+    print(f"Menguji {model} ...")
+    started = time.time()
+    data = api(PROVIDERS[provider]["base"], "/v1/chat/completions", key, {
+        "model": model,
+        "messages": [{"role": "user", "content": "Jawab satu kata saja: siap"}],
+        limit_name(provider): 1024,
+    })
+    reply = (first_message(data).get("content") or "").strip()
+    print(f"  Jawaban: {reply[:80] or '(kosong)'}  ({time.time() - started:.1f} detik)")
+    uses_tool = tool_probe(provider, key, model, timeout=120)
+    print("  Memakai tool: " + ("bisa" if uses_tool else "TIDAK"))
+    return uses_tool
+
+
+def scan(provider: str, key: str, models: list[str]) -> dict:
+    """Uji banyak model. Hasil: {model: ("ok" | "notool" | "error", keterangan)}."""
+    print(f"Menguji {len(models)} model satu per satu (masing-masing paling lama 60 detik) ...")
+    results = {}
+    for model in models:
+        started = time.time()
+        try:
+            if tool_probe(provider, key, model, timeout=60):
+                results[model] = ("ok", f"bisa, {time.time() - started:.0f} detik")
+            else:
+                results[model] = ("notool", "jalan, tapi tidak memakai tool")
+        except Failed as exc:
+            results[model] = ("error", reason(exc))
+        print(f"  {model}: {results[model][1]}")
+    return results
+
+
+def pick_model(provider: str, key: str, ids: list[str]) -> tuple[str, str | None]:
+    """Kembalikan (model, hasil uji atau None jika belum diuji)."""
+    suggested = [model for model in PROVIDERS[provider]["suggested"] if model in ids]
+    if suggested:
+        print("Ketik  uji  untuk menguji model rekomendasi sekaligus:")
+        print("  " + ", ".join(suggested))
+    while True:
+        word = input("Ketik uji, nama model, atau sebagian nama untuk mencari: ").strip()
+        if not word:
+            continue
+        results: dict = {}
+        if word.lower() == "uji":
+            if not suggested:
+                print("  Belum ada rekomendasi untuk penyedia ini. Cari dengan nama.")
+                continue
+            hits = suggested
+            results = scan(provider, key, hits)
+        elif word in ids:
+            return word, None
+        else:
+            hits = [model for model in ids if word.lower() in model.lower()][:15]
+            if not hits:
+                print("  Tidak ada yang cocok.")
+                continue
+        while True:
+            for number, model in enumerate(hits, 1):
+                note = f"  ({results[model][1]})" if model in results else ""
+                print(f"  {number}) {model}{note}")
+            prompt = "Nomor model"
+            if not results:
+                prompt += ", 0 untuk menguji semua di atas"
+            answer = input(prompt + ", kosong untuk mencari lagi: ").strip()
+            if answer == "0" and not results:
+                results = scan(provider, key, hits)
+                continue
+            if answer.isdigit() and 1 <= int(answer) <= len(hits):
+                model = hits[int(answer) - 1]
+                return model, results.get(model, (None, ""))[0]
+            break
+
+
+def menu() -> tuple[str, str, str]:
+    show_status()
+    provider = choose_provider()
+    for attempt in range(3):
+        key = ask_key(provider, offer_saved=attempt == 0)
+        try:
+            ids = fetch_models(provider, key)
+            break
+        except Failed as exc:
+            print(f"  Kunci tidak bisa dipakai: {reason(exc)}")
+    else:
+        raise Failed("kunci tetap ditolak setelah 3 kali")
+    save_key(provider, key)
+    print(f"Kunci diterima dan disimpan. Ada {len(ids)} model.")
+    while True:
+        model, result = pick_model(provider, key, ids)
+        if result == "ok":
+            return provider, key, model
+        if result == "error":
+            print("  Model itu gagal saat diuji. Pilih model lain.")
+            continue
+        if result is None:
+            try:
+                if test_model(provider, key, model):
+                    return provider, key, model
+            except Failed as exc:
+                print(f"  Gagal: {reason(exc)}. Pilih model lain.")
+                continue
+        answer = input("Model ini tidak memakai tool. Tetap dipakai? [y/N] ").strip().lower()
+        if answer in ("y", "ya"):
+            return provider, key, model
+
+
+def update_config(engine: str, model: str) -> None:
+    wanted = {
+        ("engine", "default"): engine,
+        ("intelligence", "default_model"): model,
+        ("intelligence", "preferred_engine"): engine,
+    }
+    with open(CONFIG, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    section, seen, out = None, set(), []
+    for line in lines:
+        header = re.match(r"^\s*\[([^\[\]]+)\]\s*(#.*)?$", line)
+        if header:
+            section = header.group(1).strip()
+        else:
+            match = re.match(r"^(\s*)([A-Za-z0-9_]+)\s*=", line)
+            if match and (section, match.group(2)) in wanted:
+                key = (section, match.group(2))
+                line = f'{match.group(1)}{match.group(2)} = "{wanted[key]}"'
+                seen.add(key)
+        out.append(line)
+    missing = [f"[{sec}] {name}" for (sec, name) in wanted if (sec, name) not in seen]
+    if missing:
+        raise Failed("config.toml tidak memuat " + ", ".join(missing) + "; pasang ulang install.sh")
+    write_file(CONFIG, "\n".join(out) + "\n", 0o640, owner="jarvis", group="jarvis")
+
+
+def apply(provider: str, key: str, model: str) -> None:
+    info = PROVIDERS[provider]
+    save_key(provider, key)
+    update_config(info["engine"], model)
+    active = {"JARVIS_PROVIDER": provider, "JARVIS_ENGINE": info["engine"], "JARVIS_MODEL": model}
+    if info["engine"] == "nim":
+        active.update({"NIM_HOST": info["base"], "NIM_API_KEY": key})
+    else:
+        active["OPENAI_API_KEY"] = key
+    write_file(ACTIVE, env_text(active), 0o600)
+    print(f"Memakai {model}. Menjalankan ulang OpenJarvis ...")
+    subprocess.run(["systemctl", "restart", SERVICE], check=False)
+    time.sleep(12)
+    show_status()
+    subprocess.run(["journalctl", "-u", SERVICE, "-n", "8", "--no-pager", "-o", "cat"], check=False)
+
+
+def main(argv: list[str]) -> int:
+    if os.geteuid() != 0:
+        print("Jalankan dengan sudo: sudo jarvis-model")
+        return 1
+    command = argv[1] if len(argv) > 1 else "menu"
+    try:
+        if command == "status":
+            show_status()
+            return 0
+        if command == "use":
+            if len(argv) != 4 or argv[2] not in PROVIDERS or not MODEL_RE.match(argv[3]):
+                print(__doc__)
+                return 1
+            provider, model = argv[2], argv[3]
+            key = read_env(KEYS).get(f"KEY_{provider.upper()}")
+            if not key:
+                raise Failed(f"belum ada kunci untuk {provider}; jalankan: sudo jarvis-model")
+            try:
+                uses_tool = test_model(provider, key, model)
+            except Failed as exc:
+                raise Failed(reason(exc)) from None
+            if not uses_tool:
+                raise Failed("model ini tidak memakai tool, jadi tidak diubah")
+        elif command == "menu":
+            provider, key, model = menu()
+        else:
+            print(__doc__)
+            return 1
+        apply(provider, key, model)
+        return 0
+    except Failed as exc:
+        print(f"Gagal: {exc}")
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        print("\nDibatalkan. Model aktif tidak berubah.")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

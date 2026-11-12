@@ -1,0 +1,33 @@
+[Unit]
+Description=OpenJarvis (chat Telegram + model cloud)
+After=network-online.target
+Wants=network-online.target
+# Baru berjalan setelah model dipilih dengan: sudo jarvis-model
+ConditionPathExists=/etc/openjarvis/active.env
+
+[Service]
+Type=simple
+User=jarvis
+Group=jarvis
+Environment=OPENJARVIS_HOME=/var/lib/openjarvis
+Environment=HOME=/var/lib/openjarvis
+Environment=PYTHONUNBUFFERED=1
+# File yang dikirim pemilik lewat Telegram disimpan di sini (butuh patch 0001).
+Environment=OPENJARVIS_TELEGRAM_INBOX=/srv/jarvis-files/masuk
+# Token bot dipakai bersama pengirim pengingat.
+EnvironmentFile=/etc/jarvis-tools/telegram.env
+# Penyedia, model, dan kunci API yang aktif (ditulis oleh jarvis-model).
+EnvironmentFile=/etc/openjarvis/active.env
+WorkingDirectory=/var/lib/openjarvis
+# Engine ditulis eksplisit supaya OpenJarvis tidak diam-diam pindah ke engine lain.
+ExecStart=/opt/openjarvis/venv/bin/jarvis serve --host 127.0.0.1 --port 8000 --engine ${JARVIS_ENGINE} --model ${JARVIS_MODEL}
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/openjarvis /var/lib/jarvis-tools -/srv/jarvis-files/masuk
+
+[Install]
+WantedBy=multi-user.target
