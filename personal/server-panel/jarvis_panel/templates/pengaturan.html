@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Pengaturan · Jarvis Panel{% endblock %}
+{% block content %}
+<h1>Pengaturan</h1>
+<div class="card">
+<h2>Ganti kata sandi</h2>
+{% if errors %}<ul class="errors">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>{% endif %}
+<form method="post" action="/pengaturan">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="old">Kata sandi lama</label>
+<input id="old" name="old" type="password" autocomplete="current-password" required>
+<label for="new">Kata sandi baru (minimal {{ min_password }} karakter)</label>
+<input id="new" name="new" type="password" autocomplete="new-password" required>
+<label for="again">Ulangi kata sandi baru</label>
+<input id="again" name="again" type="password" autocomplete="new-password" required>
+<p style="margin-top:14px"><button class="primary" type="submit">Simpan kata sandi</button></p>
+</form>
+</div>
+<div class="card">
+<h2>Informasi</h2>
+<p>Alamat panel: <code>{{ panel_url }}</code></p>
+<p>Lupa kata sandi? Di server jalankan <code>sudo jarvis-panel-setup --password</code>.</p>
+<p>Kunci SSH panel:</p>
+<pre>{{ pubkey }}</pre>
+</div>
+{% endblock %}

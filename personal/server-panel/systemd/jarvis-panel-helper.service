@@ -1,0 +1,13 @@
+[Unit]
+Description=Jarvis Panel: pembantu root untuk model dan kunci API OpenJarvis
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -s -E /usr/local/sbin/jarvis-panel-helper
+TimeoutStartSec=15min
+# Hanya boleh mengubah kunci dan konfigurasi OpenJarvis serta folder spool panel.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/etc/openjarvis /var/lib/openjarvis /var/lib/jarvis-ssh/spool

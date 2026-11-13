@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Jarvis Panel{% endblock %}</title>
+{% block head %}{% endblock %}
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1d2330;--muted:#5b6475;--line:#dde1e7;--accent:#2f5bd3;--ok:#1f7a4d;--warn:#9a5b00;--bad:#b42318}
+@media (prefers-color-scheme: dark){:root{--bg:#14171c;--card:#1d2129;--text:#e6e9ef;--muted:#9aa3b2;--line:#323844;--accent:#7aa2ff;--ok:#5ccf95;--warn:#f0b35a;--bad:#ff7b72}}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text)}
+a{color:var(--accent)}
+header{background:var(--card);border-bottom:1px solid var(--line)}
+nav{max-width:980px;margin:0 auto;padding:10px 16px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+nav a{color:var(--text);text-decoration:none}
+nav .brand{font-weight:600;margin-right:auto}
+main{max-width:980px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+.card .card{background:var(--bg)}
+h1{font-size:22px;font-weight:600;margin:4px 0 14px}
+h2{font-size:18px;font-weight:600;margin:0 0 10px}
+p{margin:6px 0}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500;font-size:14px}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px}
+pre{white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:480px;overflow:auto;margin:8px 0}
+.muted{color:var(--muted)}
+.badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:13px;border:1px solid var(--line)}
+.s-pending{color:var(--warn)} .s-done{color:var(--ok)} .s-running{color:var(--accent)}
+.s-failed,.s-denied,.s-refused,.s-expired{color:var(--bad)}
+label{display:block;margin:12px 0 4px;font-weight:500}
+input,select,textarea{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font:inherit}
+textarea{min-height:90px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px}
+.hint{font-size:14px;color:var(--muted);margin:4px 0 0}
+button{padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{border-color:var(--bad);color:var(--bad)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+form.inline{display:inline}
+.msg{padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);margin-bottom:16px}
+.msg.ok{border-color:var(--ok)} .msg.err{border-color:var(--bad)}
+ul.errors{color:var(--bad);margin:0 0 12px;padding-left:20px}
+button[disabled],input[disabled]{opacity:.55;cursor:not-allowed}
+summary{cursor:pointer;color:var(--muted);margin-top:8px}
+a.chosen{font-weight:600;text-decoration:none}
+</style>
+</head>
+<body>
+{% if logged_in %}
+<header><nav>
+<a class="brand" href="/">Jarvis Panel</a>
+<a href="/">Beranda</a>
+<a href="/server">Server</a>
+<a href="/model">Model</a>
+<a href="/tool">Tool</a>
+<a href="/riwayat">Riwayat</a>
+<a href="/pengaturan">Pengaturan</a>
+<form class="inline" method="post" action="/keluar"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Keluar</button></form>
+</nav></header>
+{% endif %}
+<main>
+{% if message %}<div class="msg {{ message_kind }}">{{ message }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

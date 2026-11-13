@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Tool · Jarvis Panel{% endblock %}
+{% block content %}
+<h1>Tool yang bisa dipakai AI</h1>
+{% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+{% if groups %}<p class="muted">{{ total }} tool tersedia untuk chat Telegram, diambil langsung dari OpenJarvis.</p>{% endif %}
+{% for g in groups %}
+<div class="card">
+<h2>{{ g.title }} ({{ g.tools|length }})</h2>
+<p class="hint">Sumber: {{ g.source }}</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Tool</th><th>Kegunaan</th></tr></thead>
+<tbody>
+{% for t in g.tools %}<tr><td><code>{{ t.name }}</code></td><td>{{ (t.description or "")|truncate(240) }}</td></tr>{% endfor %}
+</tbody>
+</table></div>
+</div>
+{% endfor %}
+{% endblock %}

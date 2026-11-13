@@ -1,0 +1,39 @@
+[Unit]
+Description=Jarvis Panel: tool SSH (MCP) untuk OpenJarvis, hanya localhost
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jarvis-ssh
+Group=jarvis-ssh
+EnvironmentFile=/etc/jarvis-ssh/panel.env
+Environment=JARVIS_PANEL_STATE=/var/lib/jarvis-ssh
+Environment=HOME=/var/lib/jarvis-ssh
+Environment=PYTHONUNBUFFERED=1
+LoadCredential=telegram:/etc/jarvis-tools/telegram.env
+WorkingDirectory=/opt/jarvis-tools/panel
+ExecStart=/opt/jarvis-tools/panel/venv/bin/python -m jarvis_panel mcp
+Restart=on-failure
+RestartSec=10
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/jarvis-ssh
+InaccessiblePaths=-/etc/openjarvis -/etc/jarvis-tools -/var/lib/openjarvis -/var/lib/jarvis-tools -/srv/jarvis-files
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

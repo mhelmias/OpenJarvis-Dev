@@ -1,0 +1,7 @@
+# Jarvis Panel. Kunci ulang setelah mengganti versi (hanya rilis yang sudah lebih dari 2 minggu):
+#   uv pip compile --python-version 3.13 --python-platform x86_64-unknown-linux-gnu \
+#       --generate-hashes --exclude-newer <tanggal 2 minggu lalu> requirements.in -o requirements.lock
+starlette>=1,<2
+uvicorn>=0.30,<1
+jinja2>=3.1,<4
+python-multipart>=0.0.20

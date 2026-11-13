@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Server · Jarvis Panel{% endblock %}
+{% block content %}
+<div class="row" style="justify-content:space-between"><h1>Server</h1><a href="/server/baru"><button class="primary" type="button">Tambah server</button></a></div>
+<div class="card">
+{% if not servers %}
+<p class="muted">Belum ada server.</p>
+{% else %}
+<div class="table-wrap"><table>
+<thead><tr><th>Nama</th><th>Alamat</th><th>Mode</th><th>Catatan</th></tr></thead>
+<tbody>
+{% for s in servers %}
+<tr>
+<td><a href="/server/{{ s.id }}">{{ s.name }}</a></td>
+<td><code>{{ s.username }}@{{ s.host }}{% if s.port != 22 %}:{{ s.port }}{% endif %}</code></td>
+<td>{{ s.mode }}</td>
+<td class="muted">{{ s.note }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+</div>
+<div class="card">
+<h2>Kunci SSH panel</h2>
+<p>Supaya panel bisa masuk ke sebuah server, tambahkan kunci ini ke akun yang dipakai di server itu. Jalankan di server tujuan, sebagai akun tersebut:</p>
+<pre>mkdir -p ~/.ssh &amp;&amp; chmod 700 ~/.ssh &amp;&amp; echo 'restrict {{ pubkey }}' &gt;&gt; ~/.ssh/authorized_keys &amp;&amp; chmod 600 ~/.ssh/authorized_keys</pre>
+<p class="hint">Saran: buat akun khusus tanpa sudo di server tujuan. Kata <code>restrict</code> mematikan penerusan port dan agen untuk kunci ini.</p>
+</div>
+<div class="card">
+<h2>Arti mode</h2>
+{% for key, text in MODES.items() %}<p><strong>{{ key }}</strong>: {{ text }}</p>{% endfor %}
+<p class="hint">Perintah baca yang otomatis jalan antara lain: uptime, df, du, free, ps, ss, ls, journalctl, systemctl status, docker ps/logs, tailscale status. Tanda seperti ; &amp;&amp; &gt; $( ) selalu memerlukan persetujuan.</p>
+</div>
+{% endblock %}

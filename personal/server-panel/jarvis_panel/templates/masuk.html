@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Masuk · Jarvis Panel{% endblock %}
+{% block content %}
+<div class="card" style="max-width:420px;margin:40px auto">
+<h1>Jarvis Panel</h1>
+{% if not ready %}
+<p>Panel belum disiapkan. Di server, jalankan:</p>
+<pre>sudo jarvis-panel-setup</pre>
+{% else %}
+<form method="post" action="/masuk">
+<label for="password">Kata sandi</label>
+<input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+<p style="margin-top:14px"><button class="primary" type="submit">Masuk</button></p>
+</form>
+{% endif %}
+</div>
+{% endblock %}

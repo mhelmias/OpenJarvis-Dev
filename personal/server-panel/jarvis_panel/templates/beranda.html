@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Beranda</h1>
+<div class="card">
+<h2>Model dan tool</h2>
+{% if model_status %}
+<p>Model aktif: <strong>{{ model_status.model or "-" }}</strong> <span class="muted">({{ model_status.provider or "-" }}, OpenJarvis {{ model_status.service }})</span></p>
+{% else %}
+<p class="muted">Status model belum dimuat. Buka halaman Model.</p>
+{% endif %}
+<p><a href="/model">Ganti model</a> · <a href="/tool">Lihat daftar tool</a></p>
+</div>
+<div class="card">
+<h2>Menunggu persetujuan ({{ pending|length }})</h2>
+{% if not pending %}<p class="muted">Tidak ada perintah yang menunggu.</p>{% endif %}
+{% for r in pending %}
+<div class="card">
+<div class="row"><strong><a href="/permintaan/{{ r.id }}">#{{ r.id }}</a></strong><span class="badge">{{ r.server_name }}</span><span class="muted">{{ r.created_at|wib }} WIB</span></div>
+<pre>{{ r.command }}</pre>
+<p class="muted">Alasan AI: {{ r.reason or "-" }}</p>
+<div class="row">
+<form class="inline" method="post" action="/permintaan/{{ r.id }}/setujui"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary" type="submit">Setujui dan jalankan</button></form>
+<form class="inline" method="post" action="/permintaan/{{ r.id }}/tolak"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit">Tolak</button></form>
+</div>
+</div>
+{% endfor %}
+</div>
+{% if not servers %}
+<div class="card"><p>Belum ada server. <a href="/server/baru">Tambah server</a>.</p></div>
+{% endif %}
+<div class="card">
+<h2>Aktivitas terbaru</h2>
+{% with rows=recent %}{% include "_tabel_permintaan.html" %}{% endwith %}
+<p><a href="/riwayat">Lihat semua riwayat</a></p>
+</div>
+{% endblock %}

@@ -1,0 +1,9 @@
+[Unit]
+Description=Jarvis Panel: pantau permintaan ganti model dari panel
+
+[Path]
+PathExists=/var/lib/jarvis-ssh/spool/request.json
+Unit=jarvis-panel-helper.service
+
+[Install]
+WantedBy=multi-user.target

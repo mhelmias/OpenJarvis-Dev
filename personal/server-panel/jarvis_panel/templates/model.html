@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Model · Jarvis Panel{% endblock %}
+{% block head %}{% if busy %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
+{% block content %}
+<h1>Model AI</h1>
+
+<div class="card">
+<h2>Model aktif</h2>
+{% if status %}
+<p><strong>{{ status.model or "(belum dipilih)" }}</strong></p>
+<p class="muted">Penyedia: {{ active_label }} · engine {{ status.engine or "-" }} · OpenJarvis: {{ status.service }}</p>
+<p class="hint">Status diperbarui {{ status.updated_at|wib }} WIB.</p>
+{% else %}
+<p class="muted">Memuat status dari server...</p>
+{% endif %}
+{% if running %}
+<p class="s-running">Sedang diproses: {{ ACTION_TEXT.get(running.action, running.action) }}{% if running.model %} {{ running.model }}{% endif %}. Halaman memuat ulang sendiri.</p>
+{% elif busy %}
+<p class="s-running">Permintaan menunggu diproses. Halaman memuat ulang sendiri.</p>
+{% endif %}
+</div>
+
+{% if result %}
+<div class="card">
+<h2>Hasil terakhir</h2>
+<p class="{% if result.ok %}s-done{% else %}s-failed{% endif %}">{{ result.message }}</p>
+<p class="hint">{{ ACTION_TEXT.get(result.action, result.action) }}{% if result.provider %} · {{ result.provider }}{% endif %}{% if result.model %} · {{ result.model }}{% endif %} · {{ result.finished_at|wib }} WIB</p>
+{% if result.details %}
+<div class="table-wrap"><table>
+<thead><tr><th>Model</th><th>Hasil uji</th></tr></thead>
+<tbody>{% for d in result.details %}<tr><td><code>{{ d.model }}</code></td><td class="{% if d.status == 'ok' %}s-done{% else %}s-failed{% endif %}">{{ d.text }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endif %}
+{% if result.log %}<details><summary>Catatan uji</summary><pre>{{ result.log }}</pre></details>{% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+<h2>Ganti model</h2>
+<p>Penyedia:
+{% for p in providers %}
+<a href="/model?penyedia={{ p.id }}"{% if provider and p.id == provider.id %} class="chosen"{% endif %}>{{ p.label }}</a>{% if not p.has_key %} <span class="muted">(belum ada kunci)</span>{% endif %}{% if not loop.last %} ·{% endif %}
+{% endfor %}
+</p>
+{% if provider %}
+{% if provider.has_key %}
+<form method="post" action="/model/ganti">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="provider" value="{{ provider.id }}">
+<label for="model">Nama model di {{ provider.label }}</label>
+<input id="model" name="model" list="daftar-model" required autocomplete="off"
+       placeholder="{{ provider.suggested[0] if provider.suggested else 'nama model' }}"{% if busy %} disabled{% endif %}>
+<datalist id="daftar-model">{% for m in models %}<option value="{{ m }}">{% endfor %}</datalist>
+<p class="hint">{% if models %}{{ models|length }} model dimuat {{ models_updated|wib }} WIB. Ketik sebagian nama untuk mencari.{% else %}Daftar model belum dimuat; tekan "Muat daftar model".{% endif %}
+Model diuji dulu; kalau gagal atau tidak bisa memakai tool, model aktif tidak berubah.</p>
+<p style="margin-top:12px"><button class="primary" type="submit"{% if busy %} disabled{% endif %}>Uji dan pakai model ini</button></p>
+</form>
+<div class="row" style="margin-top:8px">
+<form class="inline" method="post" action="/model/muat"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="provider" value="{{ provider.id }}"><button type="submit"{% if busy %} disabled{% endif %}>Muat daftar model</button></form>
+{% if provider.suggested %}<form class="inline" method="post" action="/model/uji"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="provider" value="{{ provider.id }}"><button type="submit"{% if busy %} disabled{% endif %}>Uji model rekomendasi</button></form>{% endif %}
+</div>
+{% if provider.suggested %}<p class="hint">Rekomendasi: {{ provider.suggested|join(", ") }}. Uji bisa memakan beberapa menit.</p>{% endif %}
+{% else %}
+<p class="muted">Simpan kunci API {{ provider.label }} dulu di bawah.</p>
+{% endif %}
+{% endif %}
+</div>
+
+<div class="card">
+<h2>Simpan kunci API</h2>
+<form method="post" action="/model/kunci">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="kprov">Penyedia</label>
+<select id="kprov" name="provider">
+{% for p in providers %}<option value="{{ p.id }}"{% if provider and p.id == provider.id %} selected{% endif %}>{{ p.label }}{% if p.has_key %} (ganti kunci){% endif %}</option>{% endfor %}
+</select>
+<label for="key">Kunci API</label>
+<input id="key" name="key" type="password" autocomplete="off" required>
+<p class="hint">Kunci diperiksa dulu ke penyedianya, lalu disimpan di server dan hanya bisa dibaca root. Panel tidak pernah menampilkannya lagi.</p>
+<p style="margin-top:12px"><button class="primary" type="submit"{% if busy %} disabled{% endif %}>Periksa dan simpan</button></p>
+</form>
+</div>
+
+<div class="card"><p class="hint">Riwayat chat disimpan di server, jadi tetap utuh saat model diganti. Mengganti model menyalakan ulang OpenJarvis, sehingga bot tidak menjawab selama sekitar 15 detik.</p></div>
+{% endblock %}

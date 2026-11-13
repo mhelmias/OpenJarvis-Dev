@@ -1,0 +1,212 @@
+#!/usr/bin/python3
+"""Pembantu root Jarvis Panel: menjalankan permintaan model dan kunci API dari panel.
+
+systemd (jarvis-panel-helper.path) menjalankannya setiap kali panel menulis
+/var/lib/jarvis-ssh/spool/request.json. Hanya tindakan berikut yang dikenal:
+
+  status   segarkan status model aktif
+  models   muat daftar model dari penyedia (memakai kunci tersimpan)
+  scan     uji model rekomendasi penyedia sekaligus
+  use      uji lalu pakai model (lewat fungsi jarvis-model, termasuk restart OpenJarvis)
+  key      periksa lalu simpan kunci API baru
+
+Semua masukan diperiksa. Pembantu tidak pernah menjalankan perintah bebas dari panel, dan
+kunci API tidak pernah ditulis ke status atau hasil.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import pwd
+import subprocess
+import sys
+import tempfile
+import time
+
+SPOOL = os.environ.get("JARVIS_PANEL_SPOOL", "/var/lib/jarvis-ssh/spool")
+JARVIS_MODEL = os.environ.get("JARVIS_MODEL_PATH", "/usr/local/sbin/jarvis-model")
+OWNER = os.environ.get("JARVIS_PANEL_USER", "jarvis-ssh")
+MAX_REQUEST_AGE = 600
+
+
+def load_jarvis_model():
+    loader = importlib.machinery.SourceFileLoader("jarvis_model", JARVIS_MODEL)
+    spec = importlib.util.spec_from_loader("jarvis_model", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def read_json(name: str, default=None):
+    try:
+        with open(os.path.join(SPOOL, name), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(name: str, data) -> None:
+    fd, tmp = tempfile.mkstemp(dir=SPOOL, prefix=".tmp-")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+    try:
+        owner = pwd.getpwnam(OWNER)
+        os.chown(tmp, owner.pw_uid, owner.pw_gid)
+    except (KeyError, PermissionError):
+        pass
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, os.path.join(SPOOL, name))
+
+
+def service_state(jm) -> str:
+    try:
+        result = subprocess.run(["systemctl", "is-active", jm.SERVICE], capture_output=True, text=True, check=False)
+        return result.stdout.strip() or "tidak diketahui"
+    except OSError:
+        return "tidak diketahui"
+
+
+def build_status(jm, models_cache: dict) -> dict:
+    provider, model = jm.current()
+    active = jm.read_env(jm.ACTIVE)
+    keys = jm.read_env(jm.KEYS)
+    return {
+        "updated_at": time.time(),
+        "provider": provider,
+        "model": model,
+        "engine": active.get("JARVIS_ENGINE", ""),
+        "service": service_state(jm),
+        "providers": [
+            {
+                "id": pid,
+                "label": jm.PROVIDERS[pid]["label"],
+                "engine": jm.PROVIDERS[pid]["engine"],
+                "has_key": bool(keys.get(f"KEY_{pid.upper()}")),
+                "suggested": list(jm.PROVIDERS[pid].get("suggested", [])),
+            }
+            for pid in jm.ORDER
+        ],
+        "models": models_cache,
+    }
+
+
+def _ok(message: str, **extra) -> dict:
+    return {"ok": True, "message": message, **extra}
+
+
+def _fail(message: str, **extra) -> dict:
+    return {"ok": False, "message": message, **extra}
+
+
+def handle(jm, request: dict, models_cache: dict) -> dict:
+    """Jalankan satu permintaan. models_cache diperbarui di tempat."""
+    action = request.get("action")
+    if action == "status":
+        return _ok("Status diperbarui.")
+    provider = request.get("provider")
+    if provider not in jm.PROVIDERS:
+        return _fail("Penyedia tidak dikenal.")
+    label = jm.PROVIDERS[provider]["label"]
+
+    if action == "key":
+        key = str(request.get("key") or "").strip()
+        if not jm.KEY_RE.match(key):
+            return _fail("Bentuk kunci tidak dikenali (ada spasi atau tanda aneh?).")
+        try:
+            ids = jm.fetch_models(provider, key)
+        except jm.Failed as exc:
+            return _fail(f"Kunci tidak bisa dipakai: {jm.reason(exc)}.")
+        jm.save_key(provider, key)
+        models_cache[provider] = {"updated_at": time.time(), "ids": ids}
+        return _ok(f"Kunci untuk {label} disimpan. Ada {len(ids)} model.")
+
+    saved = jm.read_env(jm.KEYS).get(f"KEY_{provider.upper()}")
+    if not saved:
+        return _fail(f"Belum ada kunci untuk {label}. Simpan kuncinya dulu.")
+
+    if action == "models":
+        try:
+            ids = jm.fetch_models(provider, saved)
+        except jm.Failed as exc:
+            return _fail(f"Daftar model gagal dimuat: {jm.reason(exc)}.")
+        models_cache[provider] = {"updated_at": time.time(), "ids": ids}
+        return _ok(f"{len(ids)} model dimuat dari {label}.")
+
+    if action == "scan":
+        ids = (models_cache.get(provider) or {}).get("ids")
+        if not ids:
+            try:
+                ids = jm.fetch_models(provider, saved)
+            except jm.Failed as exc:
+                return _fail(f"Daftar model gagal dimuat: {jm.reason(exc)}.")
+            models_cache[provider] = {"updated_at": time.time(), "ids": ids}
+        suggested = [m for m in jm.PROVIDERS[provider].get("suggested", []) if m in ids]
+        if not suggested:
+            return _fail("Belum ada model rekomendasi untuk penyedia ini. Ketik nama model sendiri.")
+        with contextlib.redirect_stdout(io.StringIO()):
+            results = jm.scan(provider, saved, suggested)
+        details = [{"model": m, "status": status, "text": text} for m, (status, text) in results.items()]
+        usable = sum(1 for d in details if d["status"] == "ok")
+        return _ok(f"Uji selesai: {usable} dari {len(details)} model bisa dipakai.", details=details)
+
+    if action == "use":
+        model = str(request.get("model") or "").strip()
+        if not jm.MODEL_RE.match(model):
+            return _fail("Nama model tidak valid.")
+        log = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(log):
+                uses_tool = jm.test_model(provider, saved, model)
+        except jm.Failed as exc:
+            return _fail(f"Model gagal diuji: {jm.reason(exc)}. Model aktif tidak berubah.", log=log.getvalue())
+        if not uses_tool:
+            return _fail("Model ini tidak memakai tool, jadi tidak dipakai. Model aktif tidak berubah.",
+                         log=log.getvalue())
+        with contextlib.redirect_stdout(log):
+            jm.apply(provider, saved, model)
+        return _ok(f"OpenJarvis sekarang memakai {model} dari {label}.", log=log.getvalue())
+
+    return _fail("Tindakan tidak dikenal.")
+
+
+def main() -> int:
+    request_path = os.path.join(SPOOL, "request.json")
+    try:
+        with open(request_path, encoding="utf-8") as fh:
+            request = json.load(fh)
+    except (OSError, ValueError):
+        request = None
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(request_path)
+    if not isinstance(request, dict):
+        return 0
+    summary = {"id": request.get("id"), "action": request.get("action"),
+               "provider": request.get("provider"), "model": request.get("model")}
+    if time.time() - float(request.get("at") or 0) > MAX_REQUEST_AGE:
+        write_json("result.json", {**summary, **_fail("Permintaan sudah kedaluwarsa."), "finished_at": time.time()})
+        return 0
+    write_json("running.json", {**summary, "started_at": time.time()})
+    try:
+        cache = dict((read_json("status.json", {}) or {}).get("models") or {})
+        try:
+            jm = load_jarvis_model()
+            outcome = handle(jm, request, cache)
+            write_json("status.json", build_status(jm, cache))
+        except Exception as exc:  # jangan sampai pesan error membawa kunci
+            print(f"jarvis-panel-helper: {type(exc).__name__}", file=sys.stderr)
+            outcome = _fail(f"Terjadi kesalahan di pembantu: {type(exc).__name__}.")
+        write_json("result.json", {**summary, **outcome, "finished_at": time.time()})
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(SPOOL, "running.json"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

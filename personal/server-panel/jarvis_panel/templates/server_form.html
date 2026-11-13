@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{% if server %}{{ server.name }}{% else %}Server baru{% endif %} · Jarvis Panel{% endblock %}
+{% block content %}
+<h1>{% if server %}Server {{ server.name }}{% else %}Tambah server{% endif %}</h1>
+<div class="card">
+{% if errors %}<ul class="errors">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>{% endif %}
+<form method="post" action="{% if server %}/server/{{ server.id }}{% else %}/server/baru{% endif %}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="name">Nama</label>
+<input id="name" name="name" value="{{ values.name or '' }}" required maxlength="32" placeholder="misalnya cloudpc">
+<p class="hint">Nama yang dipakai AI, huruf kecil tanpa spasi.</p>
+<label for="host">Alamat</label>
+<input id="host" name="host" value="{{ values.host or '' }}" required placeholder="misalnya 100.64.0.10">
+<label for="port">Port SSH</label>
+<input id="port" name="port" value="{{ values.port or 22 }}" inputmode="numeric" required>
+<label for="username">Nama pengguna SSH</label>
+<input id="username" name="username" value="{{ values.username or '' }}" required placeholder="misalnya jarvis-ops">
+<label for="mode">Mode</label>
+<select id="mode" name="mode">
+{% for key, text in MODES.items() %}<option value="{{ key }}"{% if values.mode == key %} selected{% endif %}>{{ key }}: {{ text }}</option>{% endfor %}
+</select>
+<label for="allow_patterns">Pola izin tambahan (opsional)</label>
+<textarea id="allow_patterns" name="allow_patterns" placeholder="^systemctl restart nextcloud$">{{ values.allow_patterns or '' }}</textarea>
+<p class="hint">Satu regex per baris. Perintah yang cocok seluruhnya ikut langsung jalan tanpa persetujuan. Kosongkan kalau ragu.</p>
+<label for="note">Catatan (opsional)</label>
+<input id="note" name="note" value="{{ values.note or '' }}" maxlength="300" placeholder="misalnya server Nextcloud">
+<p style="margin-top:14px"><button class="primary" type="submit">Simpan</button></p>
+</form>
+</div>
+{% if server %}
+<div class="card">
+<h2>Kunci host</h2>
+{% if server.host_key %}<pre>{{ server.host_key }}</pre>{% else %}<p class="muted">Belum tersimpan, jadi SSH ke server ini akan ditolak.</p>{% endif %}
+<div class="row">
+<form class="inline" method="post" action="/server/{{ server.id }}/kunci"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Pindai ulang kunci host</button></form>
+<form class="inline" method="post" action="/server/{{ server.id }}/tes"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Tes koneksi</button></form>
+</div>
+<p class="hint">Pindai ulang hanya kalau server memang dipasang ulang atau kuncinya diganti.</p>
+</div>
+<div class="card">
+<h2>Hapus server</h2>
+<form method="post" action="/server/{{ server.id }}/hapus"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit">Hapus server ini</button></form>
+<p class="hint">Riwayat perintahnya tetap tersimpan.</p>
+</div>
+{% endif %}
+<div class="card">
+<h2>Kunci SSH panel</h2>
+<p>Tambahkan ke <code>~/.ssh/authorized_keys</code> akun SSH di server tujuan:</p>
+<pre>restrict {{ pubkey }}</pre>
+</div>
+{% endblock %}

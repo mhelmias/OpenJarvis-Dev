@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Perintah #{{ r.id }} · Jarvis Panel{% endblock %}
+{% block content %}
+<h1>Perintah #{{ r.id }}</h1>
+<div class="card">
+<p><span class="s-{{ r.status }}"><strong>{{ STATUS_TEXT.get(r.status, r.status) }}</strong></span>{% if r.exit_code is not none %}, kode keluar {{ r.exit_code }}{% endif %}</p>
+<p>Server: <strong>{{ r.server_name }}</strong></p>
+<p class="muted">Diminta {{ r.created_at|wib }} WIB{% if r.decided_at %} · diputuskan {{ r.decided_at|wib }}{% endif %}{% if r.finished_at %} · selesai {{ r.finished_at|wib }}{% endif %}</p>
+<pre>{{ r.command }}</pre>
+<p>Alasan AI: {{ r.reason or "-" }}</p>
+{% if r.note %}<p class="muted">Aturan: {{ r.note }}</p>{% endif %}
+{% if r.status == "pending" %}
+<div class="row" style="margin-top:12px">
+<form class="inline" method="post" action="/permintaan/{{ r.id }}/setujui"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary" type="submit">Setujui dan jalankan</button></form>
+<form class="inline" method="post" action="/permintaan/{{ r.id }}/tolak"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit">Tolak</button></form>
+</div>
+<p class="hint">Periksa perintahnya sebelum menyetujui. Setelah disetujui, perintah langsung dijalankan di server.</p>
+{% elif r.status == "running" %}
+<p class="muted">Sedang berjalan. Muat ulang halaman ini untuk melihat hasilnya.</p>
+{% endif %}
+</div>
+{% if r.output is not none %}
+<div class="card"><h2>Keluaran</h2><pre>{{ r.output or "(tanpa keluaran)" }}</pre></div>
+{% endif %}
+{% endblock %}

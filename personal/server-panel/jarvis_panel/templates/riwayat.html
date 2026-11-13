@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Riwayat · Jarvis Panel{% endblock %}
+{% block content %}
+<h1>Riwayat perintah</h1>
+<div class="card">
+{% include "_tabel_permintaan.html" %}
+<p class="hint">Menampilkan 200 perintah terakhir.</p>
+</div>
+{% endblock %}
